@@ -1,4 +1,3 @@
-# graduation_project
 # Руководство по запуску дипломного проекта
 
 1. **Требования**:
@@ -12,7 +11,7 @@
     pip install openpyxl 
      ```
 
-3. **Создание базы данных**:
+3. **Создайте базу данных**:
      ```bash
     mysql -u root -p center < tables.sql
      ```
