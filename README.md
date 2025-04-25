@@ -21,3 +21,7 @@
      ```bash
     mysql -u root -p center < tables.sql
      ```
+
+   **Аккаунт Администратора**;
+   Логин: admin
+   Пароль: admin
