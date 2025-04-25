@@ -10,10 +10,10 @@ from openpyxl.utils import get_column_letter
 
 class Database:
     connection_data = dict(
-        host='localhost',
-        user='root',
-        password='',
-        database='center',
+        host='localhost',   # Ваш хост
+        user='root',        # Пользователь БД
+        password='',        # Пароль
+        database='center',  # Название БД
         cursorclass=DictCursor
     )
     
