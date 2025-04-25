@@ -19,6 +19,10 @@ build/
 *.sqlite3
 .env
 .env.local
+.venv/
+pyvenv.cfg
+bin/
+lib/
 
 # VSCode
 .vscode/*
