@@ -12,6 +12,12 @@
      ```
 
 3. **Создайте базу данных**:
+
+     ```bash
+    mysql -u root -p -e "CREATE DATABASE center CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+     ```
+
+4. **Создайте таблицы**
      ```bash
     mysql -u root -p center < tables.sql
      ```
