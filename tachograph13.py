@@ -513,8 +513,8 @@ class MainView:
                 'tabs': ['activation']
             },
             'master': {
-                'tables': [],
-                'tabs': ['repair', 'calibration']
+                'tables': ['contact', 'tachograph', 'vehicle'],
+                'tabs': ['repair', 'calibration', 'activation']
             }
         }
         
@@ -617,7 +617,7 @@ class MainView:
         self.tree = ttk.Treeview(self.tree_frame)
         self.tree.pack(fill='both', expand=True)
         
-        if self.account_type in ['admin', 'operator']:
+        if self.account_type in ['admin', 'operator', 'master']:
             control_frame = Tk.Frame(self.main_frame)
             control_frame.pack(fill='x', pady=5)
             ttk.Button(control_frame, text="Добавить", command=self.to_add_view).grid(row=0, column=0, padx=2)
@@ -638,7 +638,7 @@ class MainView:
         
         control_frame = Tk.Frame(frame)
         control_frame.pack(fill='x', pady=5)
-        if self.account_type in ['admin', 'operator']:
+        if self.account_type in ['admin', 'operator', 'master']:
             ttk.Button(control_frame, text="Новая активация", command=self.add_activation).grid(row=0, column=0, padx=2)
             ttk.Button(control_frame, text="Удалить", command=lambda: self.delete_record('activation', self.activation_tree)).grid(row=0, column=1, padx=2)
         
