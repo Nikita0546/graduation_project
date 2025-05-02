@@ -90,7 +90,6 @@ CREATE TABLE IF NOT EXISTS repair (
     tachograph_id INT NOT NULL,
     repair_datetime DATETIME NOT NULL,
     user_id INT NOT NULL,
-    notes TEXT,
     FOREIGN KEY (contact_id) REFERENCES contact(id),
     FOREIGN KEY (tachograph_id) REFERENCES tachograph(id),
     FOREIGN KEY (user_id) REFERENCES users(id)
