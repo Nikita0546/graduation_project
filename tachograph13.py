@@ -7,6 +7,7 @@ import openpyxl
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
+from tkcalendar import DateEntry
 
 class Database:
     connection_data = dict(
@@ -108,14 +109,12 @@ class Database:
                 c.phone,
                 v.brand,
                 v.model,
-                v.vin
-                FROM calibration cal
-                JOIN tachograph t ON cal.tachograph_id = t.id
-                JOIN users u ON cal.user_id = u.id
-                JOIN client cl ON t.Client_id = cl.id
-                JOIN contact c ON cl.id = c.Client_id
-                JOIN vehicle v ON t.Vehicle_id = v.id
-                WHERE cal.id = %s'''
+                v.gos_number
+            FROM calibration cal
+            JOIN tachograph t ON cal.tachograph_id = t.id
+            JOIN users u ON cal.user_id = u.id
+            JOIN vehicle v ON t.Vehicle_id = v.id 
+            WHERE cal.id = %s'''
             self.cursor.execute(query, (calibration_id,))
             return self.cursor.fetchone()
         except pymysql.Error as e:
@@ -132,7 +131,7 @@ class Database:
                 u.username,
                 v.brand,
                 v.model,
-                v.vin
+                v.gos_number
                 FROM repair r
                 JOIN contact c ON r.contact_id = c.id
                 JOIN tachograph t ON r.tachograph_id = t.id
@@ -144,7 +143,41 @@ class Database:
         except pymysql.Error as e:
             messagebox.showerror("Ошибка базы данных", str(e))
             return None
+        
 
+    def get_notifications(self):
+        try:
+            notifications = []
+            
+            # Уведомления для калибровок
+            self.cursor.execute('''
+                SELECT 
+                    'calibration' as type, 
+                    id, 
+                    serial_number, 
+                    DATE(next_calibration_date) as next_calibration_date  
+                FROM (
+                    SELECT 
+                        c.id, 
+                        t.serial_number, 
+                        c.next_calibration_date
+                    FROM calibration c
+                    JOIN tachograph t ON c.tachograph_id = t.id
+                ) as subquery
+                WHERE next_calibration_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 14 DAY)
+            ''')
+            calibration_notifications = self.cursor.fetchall()
+            notifications.extend(calibration_notifications)
+            
+            return notifications
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+            return []
+        
+    def close(self):
+        self.cursor.close()
+        self.db.close()
+        
 class LoginWindow(Tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -211,17 +244,18 @@ class AddView(Tk.Toplevel):
             label_text = self.parent.column_translations[table].get(column, column)
             Tk.Label(self, text=label_text).grid(row=idx, column=0, padx=5, pady=5)
             
-            if column == 'legal_entity':
-                combo = ttk.Combobox(self, values=['Физ.лицо', 'Юр.лицо'])
-                combo.grid(row=idx, column=1, padx=5, pady=5)
-                self.entries[column] = combo
-            
+            if column in ['date_start', 'date_end'] and table == 'mrp':
+                # Добавляем календарь для дат МЧД
+                entry = DateEntry(self, 
+                                date_pattern='yyyy-mm-dd',
+                                locale='ru_RU')
+                entry.grid(row=idx, column=1, padx=5, pady=5)
+                self.entries[column] = entry
             elif column == 'account_type' and table == 'users':
                 combo = ttk.Combobox(self, values=['admin', 'operator', 'master'])
                 combo.current(0)
                 combo.grid(row=idx, column=1, padx=5, pady=5)
                 self.entries[column] = combo
-            
             else:
                 entry = Tk.Entry(self)
                 entry.grid(row=idx, column=1, padx=5, pady=5)
@@ -233,10 +267,10 @@ class AddView(Tk.Toplevel):
     def save(self):
         data = {}
         for col, entry in self.entries.items():
-            if col == 'account_type':
+            if col in ['date_start', 'date_end'] and isinstance(entry, DateEntry):
+                data[col] = entry.get_date().strftime('%Y-%m-%d')
+            elif col == 'account_type':
                 data[col] = entry.get()
-            elif col == 'legal_entity':
-                data[col] = 1 if entry.get() == 'Юр.лицо' else 0
             else:
                 data[col] = entry.get()
         
@@ -265,18 +299,18 @@ class EditView(Tk.Toplevel):
             label_text = translations.get(col, col)
             Tk.Label(self, text=label_text).grid(row=idx, column=0, padx=5, pady=5)
             
-            if col == 'account_type' and table == 'users':
+            if col in ['date_start', 'date_end'] and table == 'mrp':
+                entry = DateEntry(self, 
+                                 date_pattern='yyyy-mm-dd',
+                                 locale='ru_RU')
+                entry.set_date(datetime.strptime(str(val), '%Y-%m-%d'))
+                entry.grid(row=idx, column=1, padx=5, pady=5)
+                self.entries[col] = entry
+            elif col == 'account_type' and table == 'users':
                 combo = ttk.Combobox(self, values=['admin', 'operator', 'master'])
                 combo.set(val)
                 combo.grid(row=idx, column=1, padx=5, pady=5)
                 self.entries[col] = combo
-            
-            elif col == 'legal_entity':
-                combo = ttk.Combobox(self, values=['Физ.лицо', 'Юр.лицо'])
-                combo.set('Юр.лицо' if val == b'\x01' else 'Физ.лицо')
-                combo.grid(row=idx, column=1, padx=5, pady=5)
-                self.entries[col] = combo
-            
             else:
                 entry = Tk.Entry(self)
                 entry.insert(0, str(val))
@@ -290,11 +324,12 @@ class EditView(Tk.Toplevel):
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=Tk.LEFT, padx=5)
     
     def save(self):
-        data = {col: entry.get() if not isinstance(entry, ttk.Combobox) else entry.get() 
-               for col, entry in self.entries.items()}
-        
-        if 'legal_entity' in data:
-            data['legal_entity'] = 1 if data['legal_entity'] == 'Юр.лицо' else 0
+        data = {}
+        for col, entry in self.entries.items():
+            if col in ['date_start', 'date_end'] and isinstance(entry, DateEntry):
+                data[col] = entry.get_date().strftime('%Y-%m-%d')
+            else:
+                data[col] = entry.get() if not isinstance(entry, ttk.Combobox) else entry.get()
         
         if all(data.values()):
             if self.parent.database.update_record(self.table, self.record['id'], data):
@@ -310,34 +345,55 @@ class AddActivationWindow(Tk.Toplevel):
         self.title("Новая активация")
         self.geometry("400x300")
         
+        # Клиенты
         Tk.Label(self, text="Клиент:").pack(pady=5)
         self.contact_combobox = ttk.Combobox(self)
         self.contact_combobox.pack(pady=5)
         
-        Tk.Label(self, text="Дата и время:").pack(pady=5)
-        self.datetime_entry = Tk.Entry(self)
-        self.datetime_entry.pack(pady=5)
-        self.datetime_entry.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M"))
+        # Дата и время
+        Tk.Label(self, text="Дата:").pack(pady=5)
+        self.date_entry = DateEntry(self, 
+                                  date_pattern='yyyy-mm-dd',
+                                  locale='ru_RU')
+        self.date_entry.pack(pady=5)
         
+        Tk.Label(self, text="Время (ЧЧ:ММ):").pack(pady=5)
+        self.time_entry = ttk.Entry(self)
+        self.time_entry.pack(pady=5)
+        self.time_entry.insert(0, datetime.now().strftime("%H:%M"))
+
+        # Кнопки
         btn_frame = Tk.Frame(self)
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="Сохранить", command=self.save).pack(side=Tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=Tk.LEFT, padx=5)
         
+        # Загрузка данных
         self.load_contacts()
-    
+
     def load_contacts(self):
         try:
             self.parent.database.cursor.execute("SELECT id, full_name FROM contact")
             contacts = [f"{row['id']} - {row['full_name']}" for row in self.parent.database.cursor.fetchall()]
             self.contact_combobox['values'] = contacts
-            if contacts: self.contact_combobox.current(0)
+            if contacts: 
+                self.contact_combobox.current(0)
         except pymysql.Error as e:
             messagebox.showerror("Ошибка", str(e))
-    
+
     def save(self):
         contact_id = self.contact_combobox.get().split(" - ")[0]
-        activation_datetime = self.datetime_entry.get()
+        selected_date = self.date_entry.get_date()
+        time_str = self.time_entry.get()
+        
+        try:
+            # Проверяем корректность времени
+            datetime.strptime(time_str, "%H:%M")
+        except ValueError:
+            messagebox.showerror("Ошибка", "Неверный формат времени! Используйте ЧЧ:ММ")
+            return
+            
+        activation_datetime = f"{selected_date} {time_str}"
         
         if not contact_id or not activation_datetime:
             messagebox.showwarning("Ошибка", "Заполните все поля")
@@ -362,24 +418,35 @@ class AddRepairWindow(Tk.Toplevel):
         self.title("Новый ремонт")
         self.geometry("500x400")
         
+       # Клиенты
         Tk.Label(self, text="Клиент:").pack(pady=5)
         self.contact_combobox = ttk.Combobox(self)
         self.contact_combobox.pack(pady=5)
         
+        # Тахографы
         Tk.Label(self, text="Тахограф:").pack(pady=5)
         self.tacho_combobox = ttk.Combobox(self)
         self.tacho_combobox.pack(pady=5)
         
-        Tk.Label(self, text="Дата и время:").pack(pady=5)
-        self.datetime_entry = Tk.Entry(self)
-        self.datetime_entry.pack(pady=5)
-        self.datetime_entry.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M"))
+        # Дата и время
+        Tk.Label(self, text="Дата:").pack(pady=5)
+        self.date_entry = DateEntry(self, 
+                                  date_pattern='yyyy-mm-dd',
+                                  locale='ru_RU')
+        self.date_entry.pack(pady=5)
         
+        Tk.Label(self, text="Время (ЧЧ:ММ):").pack(pady=5)
+        self.time_entry = ttk.Entry(self)
+        self.time_entry.pack(pady=5)
+        self.time_entry.insert(0, datetime.now().strftime("%H:%M"))
+
+        # Кнопки
         btn_frame = Tk.Frame(self)
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="Сохранить", command=self.save).pack(side=Tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=Tk.LEFT, padx=5)
         
+        # Загрузка данных
         self.load_contacts()
         self.load_tachographs()
 
@@ -400,29 +467,37 @@ class AddRepairWindow(Tk.Toplevel):
             if tachos: self.tacho_combobox.current(0)
         except pymysql.Error as e:
             messagebox.showerror("Ошибка", str(e))
-    
-    def save(self):
-            contact_id = self.contact_combobox.get().split(" - ")[0]
-            tacho_id = self.tacho_combobox.get().split(" - ")[0]
-            repair_datetime = self.datetime_entry.get()
-            
-            if not all([contact_id, tacho_id, repair_datetime]):
-                messagebox.showwarning("Ошибка", "Заполните все поля")
-                return
-            
-            try:
-                self.parent.database.add_record('repair', {
-                    'contact_id': contact_id,
-                    'tachograph_id': tacho_id,
-                    'repair_datetime': repair_datetime,
-                    'user_id': self.user_id  # Используем переданный ID пользователя
-                })
-                self.parent.load_repair_data()
-                self.destroy()
-                messagebox.showinfo("Успех", "Ремонт добавлен")
-            except Exception as e:
-                messagebox.showerror("Ошибка", str(e))
 
+    def save(self):
+        contact_id = self.contact_combobox.get().split(" - ")[0]
+        tacho_id = self.tacho_combobox.get().split(" - ")[0]
+        selected_date = self.date_entry.get_date()
+        time_str = self.time_entry.get()
+        
+        try:
+            datetime.strptime(time_str, "%H:%M")
+        except ValueError:
+            messagebox.showerror("Ошибка", "Неверный формат времени! Используйте ЧЧ:ММ")
+            return
+            
+        repair_datetime = f"{selected_date} {time_str}"
+        
+        if not all([contact_id, tacho_id, repair_datetime]):
+            messagebox.showwarning("Ошибка", "Заполните все поля")
+            return
+        
+        try:
+            self.parent.database.add_record('repair', {
+                'contact_id': contact_id,
+                'tachograph_id': tacho_id,
+                'repair_datetime': repair_datetime,
+                'user_id': self.user_id
+            })
+            self.parent.load_repair_data()
+            self.destroy()
+            messagebox.showinfo("Успех", "Ремонт добавлен")
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
 
 class AddCalibrationWindow(Tk.Toplevel):
     def __init__(self, parent, user_id):
@@ -432,24 +507,31 @@ class AddCalibrationWindow(Tk.Toplevel):
         self.title("Новая калибровка")
         self.geometry("400x300")
         
+        # Тахографы
         Tk.Label(self, text="Тахограф:").pack(pady=5)
         self.tacho_combobox = ttk.Combobox(self)
         self.tacho_combobox.pack(pady=5)
         
+        # Даты калибровки
         Tk.Label(self, text="Дата калибровки:").pack(pady=5)
-        self.calibration_date = Tk.Entry(self)
+        self.calibration_date = DateEntry(self, 
+                                        date_pattern='yyyy-mm-dd',
+                                        locale='ru_RU')
         self.calibration_date.pack(pady=5)
-        self.calibration_date.insert(0, datetime.now().strftime("%Y-%m-%d"))
         
         Tk.Label(self, text="Следующая калибровка:").pack(pady=5)
-        self.next_calibration = Tk.Entry(self)
+        self.next_calibration = DateEntry(self, 
+                                        date_pattern='yyyy-mm-dd',
+                                        locale='ru_RU')
         self.next_calibration.pack(pady=5)
-        
+
+        # Кнопки
         btn_frame = Tk.Frame(self)
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="Сохранить", command=self.save).pack(side=Tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=Tk.LEFT, padx=5)
         
+        # Загрузка данных
         self.load_tachographs()
 
     def load_tachographs(self):
@@ -457,37 +539,39 @@ class AddCalibrationWindow(Tk.Toplevel):
             self.parent.database.cursor.execute("SELECT id, serial_number FROM tachograph")
             tachos = [f"{row['id']} - {row['serial_number']}" for row in self.parent.database.cursor.fetchall()]
             self.tacho_combobox['values'] = tachos
-            if tachos: self.tacho_combobox.current(0)
+            if tachos: 
+                self.tacho_combobox.current(0)
         except pymysql.Error as e:
             messagebox.showerror("Ошибка", str(e))
             self.destroy()
 
+
     def save(self):
-            try:
-                tacho_id = self.tacho_combobox.get().split(" - ")[0]
-            except IndexError:
-                messagebox.showwarning("Ошибка", "Выберите тахограф из списка")
-                return
+        try:
+            tacho_id = self.tacho_combobox.get().split(" - ")[0]
+        except IndexError:
+            messagebox.showwarning("Ошибка", "Выберите тахограф из списка")
+            return
             
-            calibration_date = self.calibration_date.get()
-            next_calibration = self.next_calibration.get()
-            
-            if not all([tacho_id, calibration_date, next_calibration]):
-                messagebox.showwarning("Ошибка", "Заполните все поля")
-                return
-            
-            try:
-                self.parent.database.add_record('calibration', {
-                    'tachograph_id': tacho_id,
-                    'calibration_date': calibration_date,
-                    'next_calibration_date': next_calibration,
-                    'user_id': self.user_id  # Используем переданный ID пользователя
-                })
-                self.parent.load_calibration_data()
-                self.destroy()
-                messagebox.showinfo("Успех", "Калибровка добавлена")
-            except Exception as e:
-                messagebox.showerror("Ошибка", str(e))
+        calibration_date = self.calibration_date.get_date()
+        next_calibration = self.next_calibration.get_date()
+        
+        if not all([tacho_id, calibration_date, next_calibration]):
+            messagebox.showwarning("Ошибка", "Заполните все поля")
+            return
+        
+        try:
+            self.parent.database.add_record('calibration', {
+                'tachograph_id': tacho_id,
+                'calibration_date': calibration_date,
+                'next_calibration_date': next_calibration,
+                'user_id': self.user_id
+            })
+            self.parent.load_calibration_data()
+            self.destroy()
+            messagebox.showinfo("Успех", "Калибровка добавлена")
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
 
 class MainView:
     def __init__(self, root: Tk.Tk, user_id, account_type):
@@ -502,14 +586,25 @@ class MainView:
         self.root.rowconfigure(0, weight=1)
 
         self.database = Database()
+        self.notebook = ttk.Notebook(self.root)
+        self.create_notifications_tab()
+        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
+
+        exit_frame = ttk.Frame(self.root)
+        exit_frame.pack(side=Tk.TOP, fill=Tk.X, padx=5, pady=5)
+        ttk.Button(exit_frame, text="Выйти", command=self.logout).pack(side=Tk.RIGHT)
+
+        self.activation_data = []
+        self.repair_data = []
+        self.calibration_data = []
         
         self.permissions = {
             'admin': {
-                'tables': ['users', 'client', 'contact', 'mrp', 'passport', 'tachograph', 'vehicle'],
+                'tables': ['users', 'contact', 'mrp', 'passport', 'tachograph', 'vehicle'],
                 'tabs': ['activation', 'repair', 'calibration']
             },
             'operator': {
-                'tables': ['client', 'contact', 'mrp', 'passport', 'tachograph', 'vehicle'],
+                'tables': ['contact', 'mrp', 'passport', 'tachograph', 'vehicle'],
                 'tabs': ['activation']
             },
             'master': {
@@ -525,10 +620,6 @@ class MainView:
                 'password': 'Пароль',
                 'account_type': 'Тип учётки'
             },
-            'client': {
-                'id': 'ID',
-                'legal_entity': 'Тип клиента'
-            },
             'contact': {
                 'id': 'ID',
                 'full_name': 'ФИО',
@@ -542,8 +633,8 @@ class MainView:
             'mrp': {
                 'id': 'ID',
                 'source_path': 'Номер доверености',
-                'date_start': 'Начало',
-                'date_end': 'Окончание',
+                'date_start': 'Дата начала',
+                'date_end': 'Дата окончания',
                 'Client_id': 'ID клиента'
             },
             'passport': {
@@ -563,18 +654,17 @@ class MainView:
                 'manufacturer': 'Производитель',
                 'model': 'Модель',
                 'serial_number': 'Серийный номер',
-                'Client_id': 'ID клиента',
-                'Vehicle_id': 'ID транспорта'
+                'Vehicle_id': 'ID транспорта',
+                'contact_id': 'ID контакта'
             },
             'vehicle': {
                 'id': 'ID',
                 'brand': 'Марка',
                 'model': 'Модель',
-                'VIN': 'VIN-номер'
+                'gos_number': 'Гос. номер'
             }
         }
         
-        self.notebook = ttk.Notebook(self.root)
         
         allowed_tabs = self.permissions[self.account_type]['tabs']
         if 'activation' in allowed_tabs:
@@ -592,13 +682,116 @@ class MainView:
         
         self.notebook.pack(expand=1, fill='both')
 
+    def logout(self):
+        # Закрываем соединение с БД
+        self.database.close()
+        # Удаляем все виджеты из root
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        # Скрываем root
+        self.root.withdraw()
+        # Создаем окно авторизации
+        login = LoginWindow(self.root)
+        self.root.wait_window(login)
+        if login.success:
+            # Создаем новый MainView
+            MainView(self.root, login.user_id, login.account_type)
+            self.root.deiconify()
+        else:
+            self.root.destroy()    
+
+    def on_tab_changed(self, event):
+        if self.notebook.tab(self.notebook.select(), "text") == "Уведомления":
+            self.load_notifications()
+
+    def create_notifications_tab(self):
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Уведомления")
+        
+        columns = ('Тип', 'Сообщение', 'Дата')
+        self.notifications_tree = ttk.Treeview(frame, columns=columns, show='headings')
+        for col in columns:
+            self.notifications_tree.heading(col, text=col)
+            self.notifications_tree.column(col, width=200)
+        
+        self.notifications_tree.pack(fill='both', expand=True)
+        self.load_notifications()
+
+    def load_notifications(self):
+        self.notifications_tree.delete(*self.notifications_tree.get_children())
+        try:
+            notifications = self.database.get_notifications()
+            today = datetime.now().date()
+            
+            for note in notifications:
+                tags = []
+                end_date = note['next_calibration_date']
+                
+                if isinstance(end_date, datetime):
+                    end_date = end_date.date()
+                
+                delta = (end_date - today).days
+                note_type = 'Калибровка через 2 недели'
+                tags.append('calibration')
+                message = f"Тахограф {note['serial_number']} (ID: {note['id']})"
+                
+                end_date_str = end_date.strftime('%d.%m.%Y')
+                
+                self.notifications_tree.insert("", Tk.END, 
+                    values=(note_type, message, end_date_str),
+                    tags=tuple(tags))
+                    
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка загрузки уведомлений: {str(e)}")
+
+    def update_tree(self):
+        self.tree.delete(*self.tree.get_children())
+        for record in self.database.get_table_data(self.current_table):
+            formatted_values = []
+            tags = []
+            for col, value in record.items():
+                # Обработка даты для МЧД
+                if self.current_table == 'mrp' and col == 'date_end':
+                    end_date = value.date() if isinstance(value, datetime) else value
+                    today = datetime.now().date()
+                    delta = (end_date - today).days if end_date >= today else 0
+
+                    if end_date < today:
+                        tags.append('expired')
+                    elif delta <= 14:
+                        tags.append('two_weeks')
+
+                # Форматирование значений
+                if col == 'legal_entity':
+                    formatted_values.append('Юр.лицо' if value == b'\x01' else 'Физ.лицо')
+                elif isinstance(value, (datetime, date)):
+                    formatted_values.append(value.strftime('%Y-%m-%d'))
+                else:
+                    formatted_values.append(value)
+
+        self.tree.insert("", Tk.END, values=tuple(formatted_values), tags=tuple(tags))
+
+    def search_records(self):
+        query = self.search_entry.get().lower()
+        self.tree.delete(*self.tree.get_children())
+        for record in self.current_data:
+            if any(query in str(value).lower() for value in record.values()):
+                formatted_values = []
+                for col, value in record.items():
+                    if col == 'legal_entity':
+                        formatted_values.append('Юр.лицо' if value == b'\x01' else 'Физ.лицо')
+                    elif isinstance(value, (datetime, date)):
+                        formatted_values.append(value.strftime('%Y-%m-%d'))
+                    else:
+                        formatted_values.append(value)
+                self.tree.insert("", Tk.END, values=tuple(formatted_values))
+
     def init_main_tab_ui(self, allowed_tables):
         buttons_frame = Tk.Frame(self.main_frame)
         buttons_frame.pack(fill='x', padx=5, pady=5)
 
         buttons = [
             ('Пользователи', 'users'), 
-            ('Клиенты', 'client'),
             ('Контакты', 'contact'), 
             ('МЧД', 'mrp'),
             ('Паспорта', 'passport'), 
@@ -611,6 +804,17 @@ class MainView:
         for idx, (text, table) in enumerate(filtered_buttons):
             ttk.Button(buttons_frame, text=text, 
                      command=lambda t=table: self.change_table(t)).grid(row=0, column=idx, padx=2)
+
+        search_frame = ttk.Frame(buttons_frame)
+        search_frame.grid(row=1, column=0, columnspan=len(filtered_buttons), sticky='ew', pady=5)
+        
+        self.search_entry = ttk.Entry(search_frame)
+        self.search_entry.pack(side='left', padx=5, fill='x', expand=True)
+        
+        ttk.Button(search_frame, text="Поиск", 
+                 command=self.search_records).pack(side='left', padx=5)
+        ttk.Button(search_frame, text="Показать все", 
+                 command=self.update_tree).pack(side='left', padx=5)
 
         self.tree_frame = Tk.Frame(self.main_frame)
         self.tree_frame.pack(fill='both', expand=True)
@@ -630,6 +834,20 @@ class MainView:
     def create_activation_tab(self):
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="Активация")
+
+        control_frame = Tk.Frame(frame)
+        control_frame.pack(fill='x', pady=5)
+        
+        search_frame = ttk.Frame(control_frame)
+        search_frame.pack(side='left', padx=5)
+        
+        self.activation_search_entry = ttk.Entry(search_frame, width=30)
+        self.activation_search_entry.pack(side='left', padx=5)
+        
+        ttk.Button(search_frame, text="Поиск", 
+                 command=lambda: self.search_activation()).pack(side='left', padx=5)
+        ttk.Button(search_frame, text="Показать все", 
+                 command=self.load_activation_data).pack(side='left', padx=5)
         
         self.activation_tree = ttk.Treeview(frame, columns=('ID', 'ФИО', 'Телефон', 'Дата'), show='headings')
         for col in ['ID', 'ФИО', 'Телефон', 'Дата']:
@@ -644,9 +862,38 @@ class MainView:
         
         self.load_activation_data()
 
+    def search_activation(self):
+        query = self.activation_search_entry.get().lower()
+        self.activation_tree.delete(*self.activation_tree.get_children())
+        for record in self.activation_data:
+            if (query in str(record['id']).lower() or
+                query in record['full_name'].lower() or
+                query in record['phone'].lower() or
+                query in record['activation_datetime'].strftime('%Y-%m-%d %H:%M').lower()):
+                self.activation_tree.insert("", Tk.END, values=(
+                    record['id'], 
+                    record['full_name'],
+                    record['phone'], 
+                    record['activation_datetime'].strftime('%Y-%m-%d %H:%M')
+                ))
+
     def create_repair_tab(self):
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="Ремонт")
+
+        control_frame = Tk.Frame(frame)
+        control_frame.pack(fill='x', pady=5)
+        
+        search_frame = ttk.Frame(control_frame)
+        search_frame.pack(side='left', padx=5)
+        
+        self.repair_search_entry = ttk.Entry(search_frame, width=30)
+        self.repair_search_entry.pack(side='left', padx=5)
+        
+        ttk.Button(search_frame, text="Поиск", 
+                 command=lambda: self.search_repair()).pack(side='left', padx=5)
+        ttk.Button(search_frame, text="Показать все", 
+                 command=self.load_repair_data).pack(side='left', padx=5)
         
         columns = ('ID', 'ФИО', 'Телефон', 'Серийный номер', 'Дата', 'Ответственный')
         self.repair_tree = ttk.Treeview(frame, columns=columns, show='headings')
@@ -662,9 +909,39 @@ class MainView:
         
         self.load_repair_data()
 
+    def search_repair(self):
+        query = self.repair_search_entry.get().lower()
+        self.repair_tree.delete(*self.repair_tree.get_children())
+        for record in self.repair_data:
+            # Ищем по серийному номеру и ФИО
+            if  query in record['full_name'].lower():
+                self.repair_tree.insert("", Tk.END, values=(
+                    record['id'], 
+                    record['full_name'], 
+                    record['phone'],
+                    record['serial_number'], 
+                    record['repair_datetime'].strftime('%Y-%m-%d %H:%M'),
+                    record['username']
+                ))
+
+
     def create_calibration_tab(self):
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="Калибровка")
+
+        control_frame = Tk.Frame(frame)
+        control_frame.pack(fill='x', pady=5)
+        
+        search_frame = ttk.Frame(control_frame)
+        search_frame.pack(side='left', padx=5)
+        
+        self.calibration_search_entry = ttk.Entry(search_frame, width=30)
+        self.calibration_search_entry.pack(side='left', padx=5)
+        
+        ttk.Button(search_frame, text="Поиск", 
+                 command=lambda: self.search_calibration()).pack(side='left', padx=5)
+        ttk.Button(search_frame, text="Показать все", 
+                 command=self.load_calibration_data).pack(side='left', padx=5)
         
         columns = ('ID', 'Серийный номер', 'Дата', 'Следующая', 'Ответственный')
         self.calibration_tree = ttk.Treeview(frame, columns=columns, show='headings')
@@ -679,6 +956,20 @@ class MainView:
             ttk.Button(control_frame, text="Экспорт отчета", command=self.export_calibration_report).grid(row=0, column=3, padx=2)
         
         self.load_calibration_data()
+
+    def search_calibration(self):
+        query = self.calibration_search_entry.get().lower()
+        self.calibration_tree.delete(*self.calibration_tree.get_children())
+        for record in self.calibration_data:
+            # Ищем ТОЛЬКО по серийному номеру
+            if query in record['serial_number'].lower():
+                self.calibration_tree.insert("", Tk.END, values=(
+                    record['id'], 
+                    record['serial_number'],
+                    record['calibration_date'].strftime('%Y-%m-%d'),
+                    record['next_calibration_date'].strftime('%Y-%m-%d'),
+                    record['username']
+                ))
 
     def delete_record(self, table_type, tree):
         selected_item = tree.selection()
@@ -703,18 +994,20 @@ class MainView:
     def add_calibration(self): AddCalibrationWindow(self)
 
     def load_activation_data(self):
-        self.activation_tree.delete(*self.activation_tree.get_children())
-        for record in self.database.get_table_data('activation'):
-            self.activation_tree.insert("", Tk.END, values=(
-                record['id'], 
-                record['full_name'],
-                record['phone'], 
-                record['activation_datetime'].strftime('%Y-%m-%d %H:%M')
-            ))
+            self.activation_data = self.database.get_table_data('activation')
+            self.activation_tree.delete(*self.activation_tree.get_children())
+            for record in self.activation_data:
+                self.activation_tree.insert("", Tk.END, values=(
+                    record['id'], 
+                    record['full_name'],
+                    record['phone'], 
+                    record['activation_datetime'].strftime('%Y-%m-%d %H:%M')
+                ))
 
     def load_repair_data(self):
+        self.repair_data = self.database.get_table_data('repair')
         self.repair_tree.delete(*self.repair_tree.get_children())
-        for record in self.database.get_table_data('repair'):
+        for record in self.repair_data:
             self.repair_tree.insert("", Tk.END, values=(
                 record['id'], 
                 record['full_name'], 
@@ -725,8 +1018,9 @@ class MainView:
             ))
 
     def load_calibration_data(self):
+        self.calibration_data = self.database.get_table_data('calibration')
         self.calibration_tree.delete(*self.calibration_tree.get_children())
-        for record in self.database.get_table_data('calibration'):
+        for record in self.calibration_data:
             self.calibration_tree.insert("", Tk.END, values=(
                 record['id'], 
                 record['serial_number'],
@@ -738,6 +1032,8 @@ class MainView:
     def change_table(self, table):
         self.current_table = table
         self.columns = self.database.get_table_columns(table)
+
+        self.current_data = self.database.get_table_data(table)
         
         translated_columns = [self.column_translations[table].get(col, col) for col in self.columns]
         
@@ -753,7 +1049,10 @@ class MainView:
 
     def update_tree(self):
         self.tree.delete(*self.tree.get_children())
-        for record in self.database.get_table_data(self.current_table):
+
+        self.current_data = self.database.get_table_data(self.current_table)
+        
+        for record in self.current_data:
             formatted_values = []
             for col, value in record.items():
                 if col == 'legal_entity':
@@ -823,7 +1122,7 @@ class MainView:
                 ("Адрес:", "170006, Тверская обл., г.Тверь, ул.Достоевского д.13 корп.А оф.13"),
                 ("ТС (марка/модель):", f"{data['brand']} {data['model']}"),
                 ("Год выпуска ТС:", ""),
-                ("VIN:", data['vin']),
+                ("Гос. Номер:", data['gos_number']),
                 ("Показания одометра (км):", ""),
                 ("Тахограф (модель):", "VDO 3283.421"),
                 ("Зав. номер:", data['serial_number']),
