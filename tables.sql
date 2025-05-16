@@ -25,6 +25,15 @@ CREATE TABLE IF NOT EXISTS vehicle (
     STS CHAR(10) NOT NULL UNIQUE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Таблица контактов
+CREATE TABLE IF NOT EXISTS contact (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    full_name VARCHAR(255) NOT NULL,
+    SNILS CHAR(11) UNIQUE,
+    TIN CHAR(12) NOT NULL UNIQUE,
+    phone VARCHAR(20) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Таблица МЧД
 CREATE TABLE IF NOT EXISTS mrp (
      id INT AUTO_INCREMENT PRIMARY KEY,
@@ -33,15 +42,6 @@ CREATE TABLE IF NOT EXISTS mrp (
     date_end DATETIME NOT NULL,
     contact_id INT UNSIGNED NOT NULL,
     FOREIGN KEY (contact_id) REFERENCES contact(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Таблица контактов
-CREATE TABLE IF NOT EXISTS contact (
-    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    full_name VARCHAR(255) NOT NULL,
-    SNILS CHAR(11) UNIQUE,
-    TIN CHAR(12) NOT NULL UNIQUE,
-    phone VARCHAR(20) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Таблица паспортных данных
@@ -109,7 +109,6 @@ CREATE TABLE IF NOT EXISTS calibration (
     calibration_date DATE NOT NULL,
     next_calibration_date DATE NOT NULL,
     user_id INT NOT NULL,
-    certificate_number VARCHAR(50),
     FOREIGN KEY (tachograph_id) 
         REFERENCES tachograph(id) 
         ON DELETE CASCADE,
