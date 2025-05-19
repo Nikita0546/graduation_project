@@ -3,7 +3,6 @@
 1. **Требования**:
 - Python 3.11+ 
 - MySQL Server 8.0+ 
-- Библиотеки Python: `pymysql`, `tkinter`,`openpyxl`
 - Библиотеки Python: `pymysql`, `tkinter`,`openpyxl`,`tkcalendar`
 
 2. **Установите все для работы**:
