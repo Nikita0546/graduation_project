@@ -3,12 +3,13 @@
 1. **Требования**:
 - Python 3.11+ 
 - MySQL Server 8.0+ 
-- Библиотеки Python: `pymysql`, `tkinter`,`openpyxl`
+- Библиотеки Python: `pymysql`, `tkinter`,`openpyxl`,`tkcalendar`
 
 2. **Установите все для работы**:
      ```bash
     pip install pymysql
     pip install openpyxl 
+    pip install tkcalendar 
      ```
 
 3. **Создайте базу данных**:
