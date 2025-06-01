@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS passport (
     dpt_code CHAR(6) NOT NULL,
     date_issued DATE NOT NULL,
     full_name VARCHAR(255) NOT NULL,
-    gender ENUM('M','F') NOT NULL,
+    gender ENUM('М','Ж') NOT NULL,
     date_of_birth DATE NOT NULL,
     place_of_birth VARCHAR(255) NOT NULL,
     Contact_id INT UNSIGNED NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS tachograph (
     manufacturer VARCHAR(255) NOT NULL,
     model VARCHAR(255) NOT NULL,
     serial_number VARCHAR(16) NOT NULL UNIQUE,
-	vehicle_id INT UNSIGNED NOT NULL,
+    vehicle_id INT UNSIGNED NOT NULL,
     FOREIGN KEY (vehicle_id) REFERENCES vehicle(id),
     contact_id INT UNSIGNED NOT NULL,
     FOREIGN KEY (contact_id) REFERENCES contact(id)
@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS activation (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     contact_id INT UNSIGNED NOT NULL,
     activation_datetime DATETIME NOT NULL,
+    completed BOOLEAN NOT NULL DEFAULT FALSE,
     FOREIGN KEY (contact_id) 
         REFERENCES contact(id) 
         ON DELETE CASCADE
@@ -109,6 +110,7 @@ CREATE TABLE IF NOT EXISTS calibration (
     calibration_date DATE NOT NULL,
     next_calibration_date DATE NOT NULL,
     user_id INT NOT NULL,
+    completed BOOLEAN NOT NULL DEFAULT FALSE,
     FOREIGN KEY (tachograph_id) 
         REFERENCES tachograph(id) 
         ON DELETE CASCADE,
