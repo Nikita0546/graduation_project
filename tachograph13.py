@@ -2,19 +2,21 @@ import tkinter as Tk
 from tkinter import ttk, messagebox, filedialog
 import pymysql
 from pymysql.cursors import DictCursor
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import openpyxl
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from tkcalendar import DateEntry
+import threading
+import time
 
 class Database:
     connection_data = dict(
-        host='localhost',   # Ваш хост
-        user='root',        # Пользователь БД
-        password='',        # Пароль
-        database='center',  # Название БД
+        host='localhost',
+        user='root',
+        password='',
+        database='center',
         cursorclass=DictCursor
     )
     
@@ -29,7 +31,7 @@ class Database:
     def get_table_data(self, table):
         try:
             if table == 'activation':
-                query = '''SELECT a.id, c.full_name, c.phone, a.activation_datetime 
+                query = '''SELECT a.id, c.full_name, c.phone, a.activation_datetime, a.completed
                         FROM activation a
                         JOIN contact c ON a.contact_id = c.id'''
             elif table == 'repair':
@@ -41,7 +43,7 @@ class Database:
                         JOIN users u ON r.user_id = u.id'''
             elif table == 'calibration':
                 query = '''SELECT cal.id, t.serial_number, cal.calibration_date,
-                        cal.next_calibration_date, u.username 
+                        cal.next_calibration_date, u.username, cal.completed 
                         FROM calibration cal
                         JOIN tachograph t ON cal.tachograph_id = t.id
                         JOIN users u ON cal.user_id = u.id'''
@@ -113,7 +115,8 @@ class Database:
             FROM calibration cal
             JOIN tachograph t ON cal.tachograph_id = t.id
             JOIN users u ON cal.user_id = u.id
-            JOIN vehicle v ON t.Vehicle_id = v.id 
+            JOIN vehicle v ON t.vehicle_id = v.id 
+            JOIN contact c ON t.contact_id = c.id
             WHERE cal.id = %s'''
             self.cursor.execute(query, (calibration_id,))
             return self.cursor.fetchone()
@@ -144,12 +147,35 @@ class Database:
             messagebox.showerror("Ошибка базы данных", str(e))
             return None
         
+    def mark_procedure_completed(self, table, record_id):
+        try:
+            query = f"UPDATE {table} SET completed = TRUE WHERE id = %s"
+            self.cursor.execute(query, (record_id,))
+            self.db.commit()
+            return True
+        except pymysql.Error as e:
+            self.db.rollback()
+            messagebox.showerror("Ошибка базы данных", str(e))
+            return False
+    
+    def delete_passport_by_contact(self, contact_id):
+            try:
+                query = "DELETE FROM passport WHERE contact_id = %s"
+                self.cursor.execute(query, (contact_id,))
+                self.db.commit()
+                return True
+            except pymysql.Error as e:
+                self.db.rollback()
+                print(f"Ошибка удаления паспорта: {str(e)}")
+                return False
 
     def get_notifications(self):
         try:
             notifications = []
             
-            # Уведомления для калибровок
+            if not self.db.open:
+                self.db.ping(reconnect=True)
+                
             self.cursor.execute('''
                 SELECT 
                     'calibration' as type, 
@@ -163,6 +189,7 @@ class Database:
                         c.next_calibration_date
                     FROM calibration c
                     JOIN tachograph t ON c.tachograph_id = t.id
+                    WHERE c.completed = FALSE
                 ) as subquery
                 WHERE next_calibration_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 14 DAY)
             ''')
@@ -171,13 +198,18 @@ class Database:
             
             return notifications
         except Exception as e:
-            messagebox.showerror("Ошибка", str(e))
+            print(f"Ошибка получения уведомлений: {str(e)}")
             return []
         
     def close(self):
-        self.cursor.close()
-        self.db.close()
-        
+        try:
+            if self.cursor:
+                self.cursor.close()
+            if self.db and self.db.open:
+                self.db.close()
+        except Exception as e:
+            print(f"Ошибка при закрытии соединения: {str(e)}")
+
 class LoginWindow(Tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -245,7 +277,6 @@ class AddView(Tk.Toplevel):
             Tk.Label(self, text=label_text).grid(row=idx, column=0, padx=5, pady=5)
             
             if column in ['date_start', 'date_end'] and table == 'mrp':
-                # Добавляем календарь для дат МЧД
                 entry = DateEntry(self, 
                                 date_pattern='yyyy-mm-dd',
                                 locale='ru_RU')
@@ -256,6 +287,12 @@ class AddView(Tk.Toplevel):
                 combo.current(0)
                 combo.grid(row=idx, column=1, padx=5, pady=5)
                 self.entries[column] = combo
+            elif column in ['date_issued', 'date_of_birth'] and table == 'passport':
+                entry = DateEntry(self, 
+                                date_pattern='yyyy-mm-dd',
+                                locale='ru_RU')
+                entry.grid(row=idx, column=1, padx=5, pady=5)
+                self.entries[column] = entry
             else:
                 entry = Tk.Entry(self)
                 entry.grid(row=idx, column=1, padx=5, pady=5)
@@ -267,7 +304,7 @@ class AddView(Tk.Toplevel):
     def save(self):
         data = {}
         for col, entry in self.entries.items():
-            if col in ['date_start', 'date_end'] and isinstance(entry, DateEntry):
+            if col in ['date_start', 'date_end', 'date_issued', 'date_of_birth'] and isinstance(entry, DateEntry):
                 data[col] = entry.get_date().strftime('%Y-%m-%d')
             elif col == 'account_type':
                 data[col] = entry.get()
@@ -311,6 +348,14 @@ class EditView(Tk.Toplevel):
                 combo.set(val)
                 combo.grid(row=idx, column=1, padx=5, pady=5)
                 self.entries[col] = combo
+            elif col in ['date_issued', 'date_of_birth'] and table == 'passport':
+                entry = DateEntry(self, 
+                                 date_pattern='yyyy-mm-dd',
+                                 locale='ru_RU')
+                if val:  
+                    entry.set_date(datetime.strptime(str(val), '%Y-%m-%d'))
+                entry.grid(row=idx, column=1, padx=5, pady=5)
+                self.entries[col] = entry
             else:
                 entry = Tk.Entry(self)
                 entry.insert(0, str(val))
@@ -326,13 +371,15 @@ class EditView(Tk.Toplevel):
     def save(self):
         data = {}
         for col, entry in self.entries.items():
-            if col in ['date_start', 'date_end'] and isinstance(entry, DateEntry):
+            if col in ['date_start', 'date_end', 'date_issued', 'date_of_birth'] and isinstance(entry, DateEntry):
                 data[col] = entry.get_date().strftime('%Y-%m-%d')
+            elif col == 'account_type':
+                data[col] = entry.get()
             else:
-                data[col] = entry.get() if not isinstance(entry, ttk.Combobox) else entry.get()
+                data[col] = entry.get()
         
         if all(data.values()):
-            if self.parent.database.update_record(self.table, self.record['id'], data):
+            if self.parent.database.add_record(self.table, data):
                 self.parent.update_tree()
                 self.destroy()
         else:
@@ -344,13 +391,11 @@ class AddActivationWindow(Tk.Toplevel):
         self.parent = parent
         self.title("Новая активация")
         self.geometry("400x300")
-        
-        # Клиенты
+
         Tk.Label(self, text="Клиент:").pack(pady=5)
         self.contact_combobox = ttk.Combobox(self)
         self.contact_combobox.pack(pady=5)
         
-        # Дата и время
         Tk.Label(self, text="Дата:").pack(pady=5)
         self.date_entry = DateEntry(self, 
                                   date_pattern='yyyy-mm-dd',
@@ -362,13 +407,11 @@ class AddActivationWindow(Tk.Toplevel):
         self.time_entry.pack(pady=5)
         self.time_entry.insert(0, datetime.now().strftime("%H:%M"))
 
-        # Кнопки
         btn_frame = Tk.Frame(self)
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="Сохранить", command=self.save).pack(side=Tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=Tk.LEFT, padx=5)
-        
-        # Загрузка данных
+
         self.load_contacts()
 
     def load_contacts(self):
@@ -387,7 +430,6 @@ class AddActivationWindow(Tk.Toplevel):
         time_str = self.time_entry.get()
         
         try:
-            # Проверяем корректность времени
             datetime.strptime(time_str, "%H:%M")
         except ValueError:
             messagebox.showerror("Ошибка", "Неверный формат времени! Используйте ЧЧ:ММ")
@@ -402,7 +444,8 @@ class AddActivationWindow(Tk.Toplevel):
         try:
             self.parent.database.add_record('activation', {
                 'contact_id': contact_id,
-                'activation_datetime': activation_datetime
+                'activation_datetime': activation_datetime,
+                'completed': False
             })
             self.parent.load_activation_data()
             self.destroy()
@@ -417,18 +460,15 @@ class AddRepairWindow(Tk.Toplevel):
         self.user_id = user_id
         self.title("Новый ремонт")
         self.geometry("500x400")
-        
-       # Клиенты
+
         Tk.Label(self, text="Клиент:").pack(pady=5)
         self.contact_combobox = ttk.Combobox(self)
         self.contact_combobox.pack(pady=5)
-        
-        # Тахографы
+ 
         Tk.Label(self, text="Тахограф:").pack(pady=5)
         self.tacho_combobox = ttk.Combobox(self)
         self.tacho_combobox.pack(pady=5)
-        
-        # Дата и время
+ 
         Tk.Label(self, text="Дата:").pack(pady=5)
         self.date_entry = DateEntry(self, 
                                   date_pattern='yyyy-mm-dd',
@@ -440,13 +480,11 @@ class AddRepairWindow(Tk.Toplevel):
         self.time_entry.pack(pady=5)
         self.time_entry.insert(0, datetime.now().strftime("%H:%M"))
 
-        # Кнопки
         btn_frame = Tk.Frame(self)
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="Сохранить", command=self.save).pack(side=Tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=Tk.LEFT, padx=5)
         
-        # Загрузка данных
         self.load_contacts()
         self.load_tachographs()
 
@@ -507,12 +545,10 @@ class AddCalibrationWindow(Tk.Toplevel):
         self.title("Новая калибровка")
         self.geometry("400x300")
         
-        # Тахографы
         Tk.Label(self, text="Тахограф:").pack(pady=5)
         self.tacho_combobox = ttk.Combobox(self)
         self.tacho_combobox.pack(pady=5)
-        
-        # Даты калибровки
+  
         Tk.Label(self, text="Дата калибровки:").pack(pady=5)
         self.calibration_date = DateEntry(self, 
                                         date_pattern='yyyy-mm-dd',
@@ -525,13 +561,11 @@ class AddCalibrationWindow(Tk.Toplevel):
                                         locale='ru_RU')
         self.next_calibration.pack(pady=5)
 
-        # Кнопки
         btn_frame = Tk.Frame(self)
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="Сохранить", command=self.save).pack(side=Tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=Tk.LEFT, padx=5)
         
-        # Загрузка данных
         self.load_tachographs()
 
     def load_tachographs(self):
@@ -565,7 +599,8 @@ class AddCalibrationWindow(Tk.Toplevel):
                 'tachograph_id': tacho_id,
                 'calibration_date': calibration_date,
                 'next_calibration_date': next_calibration,
-                'user_id': self.user_id
+                'user_id': self.user_id,
+                'completed': False
             })
             self.parent.load_calibration_data()
             self.destroy()
@@ -579,9 +614,8 @@ class MainView:
         self.user_id = user_id
         self.account_type = account_type
         self.root.title(f'Тахограф 13 - {account_type.capitalize()}')
-        
-        # Убрали фиксированный размер
-        self.root.minsize(800, 600)  # Минимальный размер окна
+  
+        self.root.minsize(800, 600)  
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
@@ -635,7 +669,9 @@ class MainView:
                 'source_path': 'Номер доверености',
                 'date_start': 'Дата начала',
                 'date_end': 'Дата окончания',
-                'Client_id': 'ID клиента'
+                'Client_id': 'ID клиента',
+                'contact_id': 'ID контакта'
+
             },
             'passport': {
                 'id': 'ID',
@@ -647,21 +683,24 @@ class MainView:
                 'gender': 'Пол',
                 'date_of_birth': 'Дата рождения',
                 'place_of_birth': 'Место рождения',
-                'Contact_id': 'ID контакта'
+                'Contact_id': 'ID контакта',
+                'last_used': 'Последнее использование'
             },
             'tachograph': {
                 'id': 'ID',
                 'manufacturer': 'Производитель',
                 'model': 'Модель',
                 'serial_number': 'Серийный номер',
-                'Vehicle_id': 'ID транспорта',
+                'vehicle_id': 'ID транспорта',
                 'contact_id': 'ID контакта'
             },
             'vehicle': {
                 'id': 'ID',
                 'brand': 'Марка',
                 'model': 'Модель',
-                'gos_number': 'Гос. номер'
+                'gos_number': 'Гос. номер',
+                'PTS': 'ПТС',
+                'STS': 'СТС'
             }
         }
         
@@ -683,22 +722,24 @@ class MainView:
         self.notebook.pack(expand=1, fill='both')
 
     def logout(self):
-        # Закрываем соединение с БД
-        self.database.close()
-        # Удаляем все виджеты из root
+
+        if hasattr(self, 'cleanup_thread'):
+            self.cleanup_thread.stop()
+            self.cleanup_thread.join(timeout=2.0)
+
+        if hasattr(self, 'database'):
+            self.database.close()
+
         for widget in self.root.winfo_children():
             widget.destroy()
-        # Скрываем root
-        self.root.withdraw()
-        # Создаем окно авторизации
+        
         login = LoginWindow(self.root)
         self.root.wait_window(login)
+        
         if login.success:
-            # Создаем новый MainView
             MainView(self.root, login.user_id, login.account_type)
-            self.root.deiconify()
         else:
-            self.root.destroy()    
+            self.root.destroy()
 
     def on_tab_changed(self, event):
         if self.notebook.tab(self.notebook.select(), "text") == "Уведомления":
@@ -750,7 +791,6 @@ class MainView:
             formatted_values = []
             tags = []
             for col, value in record.items():
-                # Обработка даты для МЧД
                 if self.current_table == 'mrp' and col == 'date_end':
                     end_date = value.date() if isinstance(value, datetime) else value
                     today = datetime.now().date()
@@ -761,7 +801,6 @@ class MainView:
                     elif delta <= 14:
                         tags.append('two_weeks')
 
-                # Форматирование значений
                 if col == 'legal_entity':
                     formatted_values.append('Юр.лицо' if value == b'\x01' else 'Физ.лицо')
                 elif isinstance(value, (datetime, date)):
@@ -849,8 +888,8 @@ class MainView:
         ttk.Button(search_frame, text="Показать все", 
                  command=self.load_activation_data).pack(side='left', padx=5)
         
-        self.activation_tree = ttk.Treeview(frame, columns=('ID', 'ФИО', 'Телефон', 'Дата'), show='headings')
-        for col in ['ID', 'ФИО', 'Телефон', 'Дата']:
+        self.activation_tree = ttk.Treeview(frame, columns=('ID', 'ФИО', 'Телефон', 'Дата', 'Статус'), show='headings')
+        for col in ['ID', 'ФИО', 'Телефон', 'Дата', 'Статус']:
             self.activation_tree.heading(col, text=col)
         self.activation_tree.pack(fill='both', expand=True)
         
@@ -859,6 +898,7 @@ class MainView:
         if self.account_type in ['admin', 'operator', 'master']:
             ttk.Button(control_frame, text="Новая активация", command=self.add_activation).grid(row=0, column=0, padx=2)
             ttk.Button(control_frame, text="Удалить", command=lambda: self.delete_record('activation', self.activation_tree)).grid(row=0, column=1, padx=2)
+            ttk.Button(control_frame, text="Отметить выполненной", command=lambda: self.mark_procedure_completed('activation')).grid(row=0, column=2, padx=2)
         
         self.load_activation_data()
 
@@ -869,12 +909,14 @@ class MainView:
             if (query in str(record['id']).lower() or
                 query in record['full_name'].lower() or
                 query in record['phone'].lower() or
-                query in record['activation_datetime'].strftime('%Y-%m-%d %H:%M').lower()):
+                query in record['activation_datetime'].strftime('%Y-%m-%d %H:%M').lower() or
+                query in ("выполнено" if record['completed'] else "активно").lower()):
                 self.activation_tree.insert("", Tk.END, values=(
                     record['id'], 
                     record['full_name'],
                     record['phone'], 
-                    record['activation_datetime'].strftime('%Y-%m-%d %H:%M')
+                    record['activation_datetime'].strftime('%Y-%m-%d %H:%M'),
+                    "Выполнено" if record['completed'] else "Активно"
                 ))
 
     def create_repair_tab(self):
@@ -913,7 +955,6 @@ class MainView:
         query = self.repair_search_entry.get().lower()
         self.repair_tree.delete(*self.repair_tree.get_children())
         for record in self.repair_data:
-            # Ищем по серийному номеру и ФИО
             if  query in record['full_name'].lower():
                 self.repair_tree.insert("", Tk.END, values=(
                     record['id'], 
@@ -943,7 +984,7 @@ class MainView:
         ttk.Button(search_frame, text="Показать все", 
                  command=self.load_calibration_data).pack(side='left', padx=5)
         
-        columns = ('ID', 'Серийный номер', 'Дата', 'Следующая', 'Ответственный')
+        columns = ('ID', 'Серийный номер', 'Дата', 'Следующая', 'Ответственный', 'Статус')
         self.calibration_tree = ttk.Treeview(frame, columns=columns, show='headings')
         for col in columns: self.calibration_tree.heading(col, text=col)
         self.calibration_tree.pack(fill='both', expand=True)
@@ -953,6 +994,7 @@ class MainView:
         if self.account_type in ['admin', 'master']:
             ttk.Button(control_frame, text="Новая калибровка", command=self.add_calibration).grid(row=0, column=0, padx=2)
             ttk.Button(control_frame, text="Удалить", command=lambda: self.delete_record('calibration', self.calibration_tree)).grid(row=0, column=1, padx=2)
+            ttk.Button(control_frame, text="Отметить выполненной", command=lambda: self.mark_procedure_completed('calibration')).grid(row=0, column=2, padx=2)
             ttk.Button(control_frame, text="Экспорт отчета", command=self.export_calibration_report).grid(row=0, column=3, padx=2)
         
         self.load_calibration_data()
@@ -961,14 +1003,14 @@ class MainView:
         query = self.calibration_search_entry.get().lower()
         self.calibration_tree.delete(*self.calibration_tree.get_children())
         for record in self.calibration_data:
-            # Ищем ТОЛЬКО по серийному номеру
-            if query in record['serial_number'].lower():
+            if query in record['serial_number'].lower() or query in ("выполнено" if record['completed'] else "активно").lower():
                 self.calibration_tree.insert("", Tk.END, values=(
                     record['id'], 
                     record['serial_number'],
                     record['calibration_date'].strftime('%Y-%m-%d'),
                     record['next_calibration_date'].strftime('%Y-%m-%d'),
-                    record['username']
+                    record['username'],
+                    "Выполнено" if record['completed'] else "Активно"
                 ))
 
     def delete_record(self, table_type, tree):
@@ -990,19 +1032,51 @@ class MainView:
                 messagebox.showerror("Ошибка", str(e))
 
     def add_activation(self): AddActivationWindow(self)
-    def add_repair(self): AddRepairWindow(self)
-    def add_calibration(self): AddCalibrationWindow(self)
+    def add_repair(self): AddRepairWindow(self, self.user_id)
+    def add_calibration(self): AddCalibrationWindow(self, self.user_id)
 
+    def mark_procedure_completed(self, procedure_type):
+        tree = getattr(self, f'{procedure_type}_tree')
+        selected_item = tree.selection()
+        if not selected_item:
+            messagebox.showwarning("Ошибка", "Выберите запись")
+            return
+        
+        record_id = tree.item(selected_item[0])['values'][0]
+        
+        if self.database.mark_procedure_completed(procedure_type, record_id):
+            messagebox.showinfo("Успех", "Процедура отмечена выполненной")
+            
+            if procedure_type == 'activation':
+                self.load_activation_data()
+                for record in self.activation_data:
+                    if record['id'] == record_id:
+                        self.database.delete_passport_by_contact(record['contact_id'])
+                        break
+            elif procedure_type == 'calibration':
+                self.load_calibration_data()
+                for record in self.calibration_data:
+                    if record['id'] == record_id:
+                        self.database.cursor.execute(
+                            "SELECT contact_id FROM tachograph WHERE id IN "
+                            "(SELECT tachograph_id FROM calibration WHERE id = %s)",
+                            (record_id,)
+                        )
+                        result = self.database.cursor.fetchone()
+                        if result:
+                            self.database.delete_passport_by_contact(result['contact_id'])
+                        break
     def load_activation_data(self):
-            self.activation_data = self.database.get_table_data('activation')
-            self.activation_tree.delete(*self.activation_tree.get_children())
-            for record in self.activation_data:
-                self.activation_tree.insert("", Tk.END, values=(
-                    record['id'], 
-                    record['full_name'],
-                    record['phone'], 
-                    record['activation_datetime'].strftime('%Y-%m-%d %H:%M')
-                ))
+        self.activation_data = self.database.get_table_data('activation')
+        self.activation_tree.delete(*self.activation_tree.get_children())
+        for record in self.activation_data:
+            self.activation_tree.insert("", Tk.END, values=(
+                record['id'], 
+                record['full_name'],
+                record['phone'], 
+                record['activation_datetime'].strftime('%Y-%m-%d %H:%M'),
+                "Выполнено" if record['completed'] else "Активно"
+            ))
 
     def load_repair_data(self):
         self.repair_data = self.database.get_table_data('repair')
@@ -1026,7 +1100,8 @@ class MainView:
                 record['serial_number'],
                 record['calibration_date'].strftime('%Y-%m-%d'),
                 record['next_calibration_date'].strftime('%Y-%m-%d'),
-                record['username']
+                record['username'],
+                "Выполнено" if record['completed'] else "Активно"
             ))
 
     def change_table(self, table):
@@ -1274,12 +1349,6 @@ class MainView:
             
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка при экспорте: {str(e)}")
-
-    def add_repair(self): 
-        AddRepairWindow(self, self.user_id)  # Передаем user_id
-
-    def add_calibration(self): 
-        AddCalibrationWindow(self, self.user_id)  # Передаем user_id
 
 
 if __name__ == '__main__':
