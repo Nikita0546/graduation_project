@@ -26,3 +26,10 @@
    **Аккаунт Администратора**:
    - Логин: admin
    - Пароль: admin
+
+     **Создано ИИ-инструментом**:
+   - clients.sql
+   - test.sql
+
+     **ИИ-инструмент**:
+   - deepseek - https://www.deepseek.com/
