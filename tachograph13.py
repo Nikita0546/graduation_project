@@ -340,14 +340,17 @@ class EditView(Tk.Toplevel):
                 entry = DateEntry(self, 
                                  date_pattern='yyyy-mm-dd',
                                  locale='ru_RU')
-                entry.set_date(datetime.strptime(str(val), '%Y-%m-%d'))
+                try:
+                    if ' ' in str(val):
+                        date_part = str(val).split()[0]  
+                        entry.set_date(datetime.strptime(date_part, '%Y-%m-%d'))
+                    else:
+                        entry.set_date(datetime.strptime(str(val), '%Y-%m-%d'))
+                except:
+                    entry.set_date(datetime.now())  
                 entry.grid(row=idx, column=1, padx=5, pady=5)
                 self.entries[col] = entry
-            elif col == 'account_type' and table == 'users':
-                combo = ttk.Combobox(self, values=['admin', 'operator', 'master'])
-                combo.set(val)
-                combo.grid(row=idx, column=1, padx=5, pady=5)
-                self.entries[col] = combo
+                
             elif col in ['date_issued', 'date_of_birth'] and table == 'passport':
                 entry = DateEntry(self, 
                                  date_pattern='yyyy-mm-dd',
@@ -379,7 +382,7 @@ class EditView(Tk.Toplevel):
                 data[col] = entry.get()
         
         if all(data.values()):
-            if self.parent.database.add_record(self.table, data):
+           if self.parent.database.update_record(self.table, self.record['id'], data):
                 self.parent.update_tree()
                 self.destroy()
         else:
@@ -1200,7 +1203,7 @@ class MainView:
                 ("Показания одометра (км):", ""),
                 ("Тахограф (модель):", "VDO 3283.421"),
                 ("Зав. номер:", data['serial_number']),
-                ("СКЗИ:", data['serial_number'])
+                # ("СКЗИ:", data['serial_number'])
             ]
             
             for row, (label, value) in enumerate(owner_data, start=3):
@@ -1299,7 +1302,7 @@ class MainView:
                 ("Наименование", data['full_name']),
                 ("Адрес", "г. Москва, ул. Пушкина, д.564"),
                 ("Марка ТС", data['brand']),
-                ("Гос. номер", "")
+                ("Гос. номер", data['gos_number'])
             ]
             
             for row, (label, value) in enumerate(customer_data, start=9):
@@ -1310,7 +1313,7 @@ class MainView:
             device_data = [
                 ("Модель", "VDO 3283.421"),
                 ("Серийный номер", data['serial_number']),
-                ("Номер СКЗИ", "211350007977573"),
+                # ("Номер СКЗИ", "211350007977573"),
                 ("Гарантия", "негарантийный")
             ]
             
